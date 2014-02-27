@@ -1,3 +1,3 @@
 stat540-2014-Sun-Yue
 ====================
-This is for seminars of STAT540.
+This is for STAT540 seminars.
