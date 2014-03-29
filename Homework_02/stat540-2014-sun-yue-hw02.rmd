@@ -1,0 +1,435 @@
+HOMEWORK 02      Yue Sun
+========================================================
+
+## Q1) Microarray Analysis
+
+### a) Load Microarray Data
+```{r}
+array <- read.table("GSE37599-data.tsv", header = TRUE, row.names = 1)
+str(array)
+nrow(array)
+ncol(array)
+names(array)
+```
+This dataset has 10928 rows and 6 columns. The row represents each gene while column represents each sample. The column names are"b1" "b2" "b3" "c1" "c2" "c3". Since we are given there are 3 replicates for 2 conditions totally 6 samples in the study, I think "b"" stands for "batch" and "c" stands for "chemostat". The number indicates the order of the replicates. For example, b1 represents the first replicate of the batch codition while c3 represents the third replicate of the chemostat condition.
+
+
+
+### b) Identify Sample Swap
+i. (High volume) scatter plot matrix.
+```{r}
+library(hexbin)
+splom(array, panel = panel.hexbinplot)
+```
+In the scatter plot matrix, I notice some dots are intensively located on y=x line and the others are not. According to this, I find two groups:(b1, c1, c3) Vs (b2, b3, c2). So the swapped samples are b1 and c2.
+
+
+ii. A heatmap of the first 100 genes (you can try more but it gets slow).
+```{r}
+heatmap(as.matrix(array[1:100, ]))
+```
+Visually, the color of group (c2+b3+b2) is lighter than the group (c1+c3+b1). Again, I think c2 and b1 are the swapped samples.
+
+
+iii. Compute the Pearson correlation of the samples and plot the results using a heatmap.
+
+```{r}
+(pearson.array <- cor(array))
+heatmap(pearson.array)
+```
+Judging from the pearson correlation value of the samples, it is easy to find some are high (around 0.99) while the others are relatively lower (around 0.96 or 0.97). And the heatmap shows even more obviously: c1+b1+c3 Vs b2+b3+c2. So the swapped samples are still b1 and c2.
+
+
+iv. Scatterplot the six data samples with respect to the first two principal components and label the samples.
+
+```{r}
+pca <- prcomp(t(array))
+pcadata <- data.frame(PC1 = pca$x[, "PC1"], PC2 = pca$x[, "PC2"], name = rownames(pca$x))
+plot(PC2 ~ PC1, pcadata, type ="n")
+with(pcadata, text(PC1, PC2, labels = name))
+```
+From the PCA plot, the group of (c1,c3,b1) is one side while the group of (c2, b2, b3) is on the opposite side. That indicates again b1 and c2 are the swapped samples.
+
+
+
+### c) Microarray Differential Expression
+Let us check the data first:
+```{r}
+head(array)
+```
+
+We will swap b1 and c2:
+```{r}
+swap <- c("b1", "c2")
+names(array)[match(swap, names(array))] <- rev(swap)
+head(array)
+```
+We will reorder the data from small number to big number:
+```{r}
+array <- array[, order(colnames(array))]
+head(array)
+```
+To check what we've done visually, we will make some plots again:
+
+```{r}
+splom(array, panel = panel.hexbinplot)
+heatmap(as.matrix(array[1:100,]))
+heatmap(cor(array))
+```
+We save the new data after processing:
+
+```{r}
+write.table(array, "array-post.tsv", row.names = TRUE, col.names = NA)
+```
+The next step for DEA is to create a factor for the groups.
+```{r}
+(group <- factor(c("b", "b", "b", "c", "c", "c")))
+```
+Now we define the design matrix for the data.
+```{r}
+(des <- model.matrix(~group))
+```
+Afterawards, we will do fit the data with limma.
+```{r}
+library(limma)
+fit <- lmFit(array, des)
+fit <- eBayes(fit)
+all <- topTable(fit, coef = 2, n = Inf, sort.by = "none")
+```
+We will retrive the gene id by using the yeast2.db package from Bioconductor.
+```{r}
+#source("http://bioconductor.org/biocLite.R")
+#biocLite("yeast2.db")
+library(yeast2.db)
+```
+Package these results in a data frame with six columns:
+```{r}
+
+probe.ids <- row.names(all)
+gene.ids <- unlist(mget(probe.ids, yeast2ORF))
+limma.results <- data.frame(probe.ids, gene.ids, all$P.Value, all$adj.P.Val, all$logFC, all$t)
+colnames(limma.results) <- c("probe.id", "gene.id", "p.value", "q.value", "log.fc",  "test.stat")
+str(limma.results)
+
+```
+To remove the probes without associated gene ids:
+```{r}
+narows <- which(is.na(gene.ids))
+limma.results <- limma.results[-narows, ]
+str(limma.results)
+```
+
+i. How many probes did we start with and how many remain after removing probes without gene ids?
+
+```{r}
+nrow(array)
+nrow(limma.results)
+```
+There are 10928 probes originally, but remain 5705 probes after removing the probes without gene ids.
+
+
+ii. Illustrate the differential expression between the batch and the chemostat samples for the top hit (i.e., probe with the lowest p- or q-value).
+```{r}
+tophit <- which.min(limma.results$p.value)
+(tophitprobe <- row.names(limma.results)[tophit])
+```
+So the top hit probe is 1772391_at. The plot is as below:
+
+```{r}
+tophit <- which(row.names(array) == tophitprobe)
+tophit <- t(array[tophit, ])
+tophit <- data.frame(gExp = as.vector(tophit), gene = factor(rep(colnames(tophit), each = nrow(tophit)), levels = colnames(tophit)))
+group <- c(rep("batch", 3), rep("chemostat", 3))
+group <- as.factor(group)
+tophit <- suppressWarnings(data.frame(group, tophit))
+library(ggplot2)
+ggplot(tophit, aes(x = group, y = gExp, colour = group)) + geom_point() + geom_jitter(width = 0.05)
+```
+We can see the gene with probe id 1772391_at is expressing much higher in the chemostat condition than batch condition.
+
+iii. How many probes are identified as differentially expressed at a false discovery rate (FDR) of 1e-5 (note: this is a FDR cutoff used in the original paper)?
+
+```{r}
+limma.hit <- as.character(limma.results$gene.id[which(limma.results$q.value < 1e-05)])
+str(limma.hit)
+```
+
+There are 725 probes.
+
+iv. Save your results for later with write.table().
+```{r}
+write.table(limma.results, "array_differential_expression_results.tsv", sep ="\t", row.names =TRUE, col.names =NA)
+```
+
+
+## Q2) RNA-Seq Analysis
+
+### a) (1pt) Load RNA Count Data and Sanity Check
+```{r}
+count <- read.table("stampy.counts.tsv", header =TRUE, row.names =1)
+str(count)
+head(count)
+heatmap(cor(count))
+```
+i. What are dimensions of the dataset? 
+There are 6542 rows and 6 columns. The rows represent RNA, columns represent samples. In RNA count data, each row represents count data but each row in array data represent DNA expression level data.
+
+
+ii. Do a sanity check to make sure there is no sample swap by plotting a heatmap of the sample correlations.
+
+```{r}
+#install.packages("gplots")
+library(gplots)
+heatmap.2(cor(count), Rowv = FALSE, Colv = FALSE, dendrogram = "none", trace = "none")
+```
+There is no sample swap.
+
+### b) (2pt) edgeR Differential Expression Analysis
+
+```{r}
+library(edgeR)
+dge.glm <- DGEList(counts = count, group = group)
+str(dge.glm)
+```
+Now we need to estimate the dispersion values¡£
+```{r}
+dge.glm.com.disp <- estimateGLMCommonDisp(dge.glm, des, verbose = TRUE)
+```
+```{r}
+dge.glm.trend.disp <- estimateGLMTrendedDisp(dge.glm.com.disp, des)
+```
+```{r}
+dge.glm.tag.disp <- estimateGLMTagwiseDisp(dge.glm.trend.disp, des)
+plotBCV(dge.glm.tag.disp)
+```
+GLM
+```{r}
+rfit <- glmFit(dge.glm.tag.disp, des)
+lrt <- glmLRT(rfit, coef = 2)
+rall <- topTags(lrt, sort.by = "none", n = Inf)
+```
+Package these results in a data.frame called 'edger.results'
+```{r}
+edger.results = data.frame(rownames(count), rall$table$PValue, rall$table$FDR, rall$table$logFC, rall$table$LR)
+colnames(edger.results) = c("gene.id", "p.value", "q.value", "log.fc", "test.stat")
+```
+Save the result
+```{r}
+write.table(edger.results, file = "stampy.edger.results.tsv", row.names =TRUE, col.name =NA, sep ="\t")
+```
+
+i.How many genes are differentially expressed between conditions at a false discovery rate (FDR) of 1e-5?
+```{r}
+sum(edger.results$q.value <1e-05)
+edger.hit <- as.character(edger.results$gene.id[which(edger.results$q.value < 1e-05)])
+```
+There are 2669 differentially expressed between conditions at a false discovery rate (FDR) of 1e-5.
+
+ii. How many genes are differentially over-expressed in chemostat compared to batch medium samples at a false discovery rate (FDR) of 1e-5?
+```{r}
+summary(de.glm <- decideTestsDGE(lrt, p = 1e-05, adjust = "BH"))
+```
+There are 1515 differentially over-expressed in chemostat compared to batch medium samples at a false discovery rate (FDR) of 1e-5.
+
+### c) (2pt) DESeq Differential Expression Analysis
+i.
+```{r}
+library(DESeq)
+deSeqDat <- newCountDataSet(count, group)
+head(counts(deSeqDat))
+deSeqDat <- estimateSizeFactors(deSeqDat)
+sizeFactors(deSeqDat)
+deSeqDat <- estimateDispersions(deSeqDat)
+plotDispEsts(deSeqDat)
+```
+ii.
+```{r}
+results <- nbinomTest(deSeqDat, levels(group)[1], levels(group)[2])
+str(results)
+```
+
+Package these results in a data.frame called 'deseq.results' with four columns:
+```{r}
+deseq.results <- data.frame(results$id, results$pval, results$padj, results$log2FoldChange)
+colnames(deseq.results) <- c("gene.id", "p.value", "q.value", "log.fc")
+```
+Save the results
+```{r}
+write.table(edger.results, file = "stampy.deseq.results.tsv", row.names = TRUE, col.names = NA)
+```
+
+iii.How many genes are differentially expressed between conditions at a false discovery rate (FDR) of 1e-5?
+```{r}
+sum(deseq.results$q.value <1e-05)
+deseq.hit <- as.character(deseq.results$gene.id[which(deseq.results$q.value < 1e-05)])
+```
+So there are 2198 genes differentially expressed between conditions at a false discovery rate (FDR) of 1e-5.
+
+
+iv. How many differentially expressed genes are identified by both 'edgeR' and 'DESeq'?
+```{r}
+both.hit <- intersect(deseq.hit, edger.hit)
+summary(both.hit)
+```
+So there are 2176 differential expressed genes identified by both 'edgeR' and 'DESeq'.
+
+### d) (2pt) voom Differential Expression Analysis
+i. voom normalizes the counts before it converts counts to log2-cpm.
+```{r}
+norm.factor <- calcNormFactors(count)
+```
+
+ii. Use voom to convert count data into logged CPM data and then use limma to identify differentially expressed genes between conditions.
+```{r}
+dat.voomed <- voom(count, des, plot = TRUE, lib.size = colSums(count) * norm.factor)
+fit <- lmFit(dat.voomed, des)
+fit <- eBayes(fit)
+voomed.all <- topTable(fit, coef = 2, n = Inf, sort.by = "none")
+```
+Package these results in a data.frame
+```{r}
+voom.limma.results <- data.frame(rownames(voomed.all), voomed.all$P.Value, voomed.all$adj.P.Val, voomed.all$logFC, voomed.all$t)
+colnames(voom.limma.results) <- c("gene.id", "p.value", "q.value", "log.fc", "test.stat")
+```
+Save the results
+```{r}
+write.table(voom.limma.results, file = "stampy.limma.results.tsv", row.names = TRUE, col.names = NA)
+```
+
+iii.How many genes are differentially expressed between conditions at a false discovery rate (FDR) of 1e-5?
+```{r}
+voom.limma.hit <- as.character(voom.limma.results$gene.id[which(voom.limma.results$q.value < 1e-05)])
+summary(voom.limma.hit)
+```
+So there are 1794 genes are differential expressed between conditions.
+
+
+iv. What fraction of the genes identified using voom+limma are also found by edger and DESeq methods? For example if the DE analysis using voom+limma found 1000 genes and both edgeR and DESeq found 500 of these, the fraction of genes found would be 5001000=0.5.
+
+```{r}
+all.hit <- intersect(voom.limma.hit, both.hit)
+(fraction <- length(all.hit)/length(voom.limma.hit))
+```
+
+So the fraction is 0.9989.
+
+### e) (3pt) Comparison of Differential Expression Analyses
+i. create a Venn diagram.
+```{r}
+#install.packages("VennDiagram")
+library(VennDiagram)
+de.genes <- list(edgeR = edger.hit, DESeq = deseq.hit, voom.limma = voom.limma.hit)
+plot.new()
+venn.plot <- venn.diagram(de.genes, filename = NULL, fill = c("red", "blue", "green"))
+grid.draw(venn.plot)
+```
+ii. Create a smear plot
+```{r}
+plotSmear(dge.glm, de.tags = all.hit)
+```
+The smear dots are labeled with different colors. We can see the putative DE genes are labeled as red dots which are relatively away from the 0 at logFC scale. The upper part of red dots indicate they are over-expressed genes while the below red dots are the under-expressed genes.
+
+iii.There are two genes identified by edgeR and voom+limma but not by DESeq. Illustrate the logged counts of them. Compare the (log) counts of these two genes with those of two genes identified by the three methods.
+
+```{r}
+outgene <- setdiff(voom.limma.hit, all.hit)
+featureCounts <- count[outgene, ]
+```
+so the two genes are YMR058W and YPL271W.
+
+```{r}
+featureDat <- data.frame(gene.id = factor(rep(rownames(featureCounts), ncol(featureCounts))), cond = factor(rep(group, each = nrow(featureCounts))), log.count = log2(unlist(featureCounts)))
+stripplot(gene.id ~ log.count, featureDat, groups = cond, auto.key = TRUE, jitter = TRUE)
+```
+We choose other two genes in the overlapped set of three methods.
+```{r}
+set.seed = 1000
+twonumber <- sample(1:length(all.hit), size = 2)
+twogenes <- all.hit[twonumber]
+str(twogenes)
+```
+
+```{r}
+featureCounts <- count[twogenes, ]
+featureDat <- data.frame(gene.id = factor(rep(rownames(featureCounts), ncol(featureCounts))), cond = factor(rep(group, each = nrow(featureCounts))), log.count = log2(unlist(featureCounts)))
+stripplot(gene.id ~ log.count, featureDat, groups = cond, auto.key = TRUE, jitter = TRUE)
+```
+
+## Q3: Compare RNA-Seq with array DEA
+i.Venn diagram
+```{r}
+de.genes.2 <- list(RNA_Seq = edger.hit, Microarray = limma.hit)
+plot.new()
+venn.plot.2 <- venn.diagram(de.genes.2, filename = NULL, fill = c("red", "green"))
+grid.draw(venn.plot.2)
+```
+
+ii Density plots
+The first plot includes the densities of q-values of the genes analyzed by both platforms (i.e., genes shared by both data frames).
+```{r}
+shared.genes <- intersect(edger.results$gene.id, limma.results$gene.id)
+shared.edger.results <- subset(edger.results, edger.results$gene.id %in% shared.genes)
+shared.limma.results <- subset(limma.results, limma.results$gene.id %in% shared.genes)
+RNA_Seq_q.value <- shared.edger.results$q.value
+Microarray_q.value <- shared.limma.results$q.value
+densityplot(~RNA_Seq_q.value + Microarray_q.value, auto.key = TRUE)
+```
+The second plot includes the densities of q-values of ALL genes analyzed by at least one of the platforms.
+```{r}
+all.genes <- limma.results$gene.id
+all.edger.results <- subset(edger.results, edger.results$gene.id %in% all.genes)
+RNA_Seq_all_genes <- all.edger.results$q.value
+Microarray_all_genes <- limma.results$q.value
+densityplot(~RNA_Seq_all_genes + Microarray_all_genes, auto.key = TRUE)
+```
+iii Interesting genes
+```{r}
+jDat <- dget("featGenesData-q3-DPUT.txt")
+str(jDat)
+```
+
+```{r}
+Groupidentity <- function(mygene) {
+    my.gene <- list(RNA_Seq = edger.hit, Microarray = limma.hit, mygene = mygene)
+    names(my.gene) <- c("RNA_Seq", "Microarray", mygene)
+    plot.new()
+    venn.plot.mygene <- venn.diagram(my.gene, filename = NULL, fill = c("red", 
+        "blue", "green"), height = 500, width = 500)
+    grid.draw(venn.plot.mygene)
+}
+```
+
+```{r}
+gene <- levels(jDat$gene.id)
+```
+We've got YDR345C first.
+```{r}
+Groupidentity(gene[1])
+```
+For the Venn diagram, gene YDR345C is identified as a DE gene in both platform (RNA_Seq and microarray) because it shows in the overlap area, and in the plot of chunk stripplot-five-interesting-genes, the two group of dots (YDR345C) are seperate with each other. That means these two methods having the same conclusion .
+
+We move on for the second gene:
+```{r}
+Groupidentity(gene[2])
+```
+Gene YDR384C is similar with gene YDR345C, which  shows in the plot could also support conclusion of plot of chunk stripplot-five-interesting-genes.
+
+Then, we do the third one.
+```{r}
+Groupidentity(gene[3])
+```
+Gene YBL025W, Venn diagram shows this gene is not identified, the plot also shows that because two group of dots (YDR345C) are close to each other .
+
+We do the forth one.
+```{r}
+Groupidentity(gene[4])
+```
+Venn diagram shows that Gene YCL042W is considered to be DE only in RNA-Seq platform but not in Microarray platform, which is the same as the plot shown: seperate dots in the RNA-Seq side but very close dots in the microarray side.
+
+We do the last one.
+```{r}
+Groupidentity(gene[5])
+```
+For the last one, gene YGL209W, in contrast with YCL042W, Venn diagram shows that it is considered to be DE in microarray platform but not in RNA-Seq platform, this is also consistent with the plot result.
+
+In general the agreement between the two platforms is good. But in some cases, e.g.YCL042W and YGL209W, these two platform show different sensitivity.

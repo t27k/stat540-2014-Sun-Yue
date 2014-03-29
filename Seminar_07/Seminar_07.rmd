@@ -1,0 +1,220 @@
+Seminar 07
+
+========================================================
+Optional material: from BAM file to count data
+BAM/SAM aligned sequence data file format
+
+```{r}
+#source ("http://bioconductor.org/biocLite.R")
+#biocLite("ShortRead")
+#biocLite("Rsamtools")
+#biocLite("easyRNASeq")
+#biocLite("BSgenome.Dmelanogaster.UCSC.dm3")
+#biocLite("biomaRt")
+```
+
+```{r}
+library (knitr)
+library (ShortRead)
+library (Rsamtools)
+bamDat <- readAligned("drosophilaMelanogasterSubset.bam", type = "BAM")
+str (bamDat)
+```
+
+```{r}
+indexFile <- indexBam ("drosophilaMelanogasterSubset.bam")
+```
+
+```{r}
+library(easyRNASeq)
+```
+
+Filtering the data
+```{r}
+nFilt <- nFilter(2)
+chrFilt <- chromosomeFilter(regex = "chr")
+filt <- compose(nFilt, chrFilt)
+bamDatFiltered <- bamDat[filt(bamDat)]
+```
+Examining the data
+```{r}
+str(bamDatFiltered)
+levels(chromosome(bamDatFiltered))
+id(bamDatFiltered)[1:10]
+sread(bamDatFiltered)[1:10]
+quality(bamDatFiltered)[1:10]
+position(bamDatFiltered)[1:10]
+strand (bamDatFiltered) [1:10]
+```
+Accessiong Genome Annotations
+```{r}
+library (BSgenome.Dmelanogaster.UCSC.dm3)
+(chrSizes <- seqlengths(Dmelanogaster))
+```
+Biomart
+```{r}
+library(biomaRt)
+ensembl <- useMart("ensembl", dataset = "dmelanogaster_gene_ensembl")
+annotation.fields <- c("ensembl_gene_id", "strand", "chromosome_name", "start_position",  "end_position")
+gene.annotation <- getBM(annotation.fields, mart =ensembl, filters = "chromosome_name", values = c("2L"))
+str(gene.annotation)
+```
+small check the chromosome and match to BAM file pattern
+```{r}
+levels(as.factor(gene.annotation$chromosome))
+gene.annotation$chromosome <- paste("chr", gene.annotation$chromosome_name, sep="")
+levels(as.factor(gene.annotation$chromosome))
+```
+We store the gene annotation information in an IRanges object
+```{r}
+gene.range <- RangedData(IRanges(start = gene.annotation$start_position, end = gene.annotation$end_position), space = gene.annotation$chromosome, strand = gene.annotation$strand, gene = gene.annotation$ensembl_gene_id, universe = "Dm3")
+show(gene.range)
+```
+calculating coverage
+```{r}
+(cover <- coverage(bamDatFiltered, width=chrSizes))
+```
+
+```{r}
+gene.coverage <- aggregate(cover[match(names(gene.range), names(cover))], ranges(gene.range),sum)
+gene.coverage <- ceiling(gene.coverage/unique(width(bamDat)))
+gene.coverage
+```
+Restricting attention to chr2L
+```{r}
+length(gene.coverage[["chr2L"]])
+length(ranges(gene.range)$chr2L)
+```
+
+```{r}
+countTable <- data.frame(chromosome = gene.range$space, gene_start = start(gene.range$ranges), gene_end = end(gene.range$ranges), strand = gene.range$strand, gene = gene.range$gene, count = as.vector(gene.coverage[["chr2L"]]))
+dim(countTable)
+head(countTable)
+```
+RPKM"number of reads per kilobase of gene"
+```{r}
+countTable <- data.frame(chromosome = gene.range$space, gene_start = start(gene.range$ranges),  gene_end = end(gene.range$ranges), strand = gene.range$strand, gene = gene.range$gene, count = as.vector(gene.coverage[["chr2L"]]), RPKM = (as.vector(gene.coverage[["chr2L"]])/(end(gene.range$ranges) - start(gene.range$ranges))) * (1e+09/length(bamDat)))
+head(countTable)
+```
+##RNA-seq Differential Exression Arrays
+
+```{r}
+##biocLite("edgeR")
+library("edgeR")
+edgeRUsersGuide()
+```
+Data Input
+
+```{r}
+dat <- read.table ("bottomly_count_table.tsv", header =¡¡TRUE, row.name = 1)
+des <- read.table ("bottomly_phenodata.tsv", header = TRUE, row.name = 1)
+str(dat)
+str(des)
+show(des)
+all (rownames(des)==colnames(dat))
+```
+
+
+GLM edgeR
+```{r}
+with (des, table(strain))
+group <- factor(c(rep("1", 10), rep("2", 11)))
+group
+```
+
+```{r}
+dge.glm <- DGEList(counts = dat, group = group)
+str(dge.glm)
+names(dge.glm)
+dge.glm[["samples"]]
+nrow(dge.glm[[1]])
+ncol(dge.glm[[1]])
+```
+
+
+```{r}
+design <- model.matrix(~group)
+design
+```
+
+
+```{r}
+dge.glm.com.disp <- estimateGLMCommonDisp(dge.glm, design, verbose = TRUE)
+```
+
+
+
+```{r}
+dge.glm.trend.disp <- estimateGLMTrendedDisp(dge.glm.com.disp, design)
+dge.glm.tag.disp <- estimateGLMTagwiseDisp(dge.glm.trend.disp, design)
+plotBCV(dge.glm.tag.disp)
+```
+
+
+
+```{r}
+fit <- glmFit(dge.glm.tag.disp, design)
+colnames(coef(fit))
+lrt <- glmLRT(fit, coef = 2)
+topTags(lrt)
+```
+
+
+
+```{r}
+tt.glm <- topTags(lrt, n = Inf)
+class(tt.glm)
+nrow(tt.glm$table[tt.glm$table$FDR < 0.01, ])
+interestingSamples <- rownames(tt.glm$table[tt.glm$table$FDR < 1e-50, ])
+cpm(dge.glm.tag.disp)[interestingSamples, ]
+```
+
+```{r}
+summary(de.glm <- decideTestsDGE(lrt, p = 0.05, adjust = "BH"))
+```
+
+```{r}
+tags.glm <- rownames(dge.glm.tag.disp)[as.logical(de.glm)]
+plotSmear(lrt, de.tags = tags.glm)
+abline(h = c(-2, 2), col = "blue")
+```
+
+DESeq
+
+```{r}
+library(DESeq)
+deSeqDat <- newCountDataSet(dat, group)
+head(counts(deSeqDat))
+```
+
+
+```{r}
+deSeqDat <- estimateSizeFactors(deSeqDat)
+sizeFactors(deSeqDat)
+deSeqDat <- estimateDispersions(deSeqDat)
+plotDispEsts(deSeqDat)
+```
+
+```{r}
+results <- nbinomTest(deSeqDat, levels(group)[1], levels(group)[2])
+str(results)
+```
+
+```{r}
+plotMA(results)
+```
+
+Voom & Limma
+```{r}
+library(limma)
+norm.factor <- calcNormFactors(dat)
+dat.voomed <- voom(dat, design, plot = TRUE, lib.size = colSums(dat) * norm.factor)
+dat.voomed
+```
+
+```{r}
+fit <- lmFit(dat.voomed, design)
+fit <- eBayes(fit)
+topTable(fit)
+```
+
